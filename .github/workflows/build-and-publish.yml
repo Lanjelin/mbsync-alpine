@@ -40,7 +40,9 @@ jobs:
           HTML="$(curl -fsSL "$PKG_URL")"
 
           PKGVER="$(printf '%s\n' "$HTML" \
-            | sed -n 's/.*Version[[:space:]]*\([0-9][0-9A-Za-z\.\-]*\).*/\1/p' \
+            | grep -A1 '>Version<' \
+            | tail -n1 \
+            | sed -E 's/.*>([^<]+)<.*/\1/' \
             | head -n1)"
 
           if [ -z "$PKGVER" ]; then
