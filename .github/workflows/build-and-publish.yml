@@ -1,0 +1,101 @@
+name: Build and publish mbsync-alpine
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".github/workflows/build-and-publish.yml"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      ALPINE_BRANCH: v3.23
+      GHCR_IMAGE_BASE: ghcr.io/lanjelin/mbsync-alpine
+      SOURCE_REPO: https://github.com/Lanjelin/mbsync-alpine
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+
+      - name: Determine isync package version from Alpine
+        id: get_version
+        run: |
+          set -euo pipefail
+
+          PKG_URL="https://pkgs.alpinelinux.org/package/${ALPINE_BRANCH}/community/x86_64/isync"
+          HTML="$(curl -fsSL "$PKG_URL")"
+
+          PKGVER="$(printf '%s\n' "$HTML" \
+            | sed -n 's/.*Version[[:space:]]*\([0-9][0-9A-Za-z\.\-]*\).*/\1/p' \
+            | head -n1)"
+
+          if [ -z "$PKGVER" ]; then
+            echo "Failed to determine isync package version."
+            exit 1
+          fi
+
+          echo "ISYNC_PKG_VERSION=$PKGVER" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$PKGVER" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GH_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Check if this version already exists
+        run: |
+          IMAGE="${GHCR_IMAGE_BASE}:${IMAGE_TAG}"
+          echo "Checking if $IMAGE exists..."
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "Image already exists. Skipping build."
+            exit 0
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Export build timestamp
+        id: meta
+        run: echo "created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.GHCR_IMAGE_BASE }}:${{ env.IMAGE_TAG }}
+            ${{ env.GHCR_IMAGE_BASE }}:latest
+          build-args: |
+            ISYNC_PKG_VERSION=${{ env.ISYNC_PKG_VERSION }}
+            VERSION=${{ env.IMAGE_TAG }}
+            REVISION=${{ github.sha }}
+            SOURCE=${{ env.SOURCE_REPO }}
+            CREATED=${{ steps.meta.outputs.created }}
+          labels: |
+            org.opencontainers.image.title=mbsync-alpine
+            org.opencontainers.image.description=Lightweight Alpine-based mbsync container that auto-tracks Alpine's isync package.
+            org.opencontainers.image.url=${{ env.SOURCE_REPO }}
+            org.opencontainers.image.source=${{ env.SOURCE_REPO }}
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.licenses=GPL-3.0-or-later
